@@ -1,42 +1,53 @@
-﻿namespace RealArtists.NPredicate {
-  using System;
-  using System.Collections.Generic;
-  using System.Linq;
-  using System.Linq.Expressions;
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Linq.Expressions;
 
-  // Set to 0 to specify normal Linq-to-objects dialect.
-  [Flags]
-  public enum LinqDialect {
+namespace RealArtists.NPredicate;
+
+// Set to 0 to specify normal Linq-to-objects dialect.
+[Flags]
+public enum LinqDialect
+{
     EntityFramework = 1,
     CaseInsensitiveCollation = 2,
     DiacriticInsensitiveCollation = 4
-  }
+}
 
-  public abstract class Predicate {
-    public static Predicate Parse(string format, params dynamic[] args) {
-      return new PredicateParser(format, args).ParsePredicate();
+public abstract class Predicate
+{
+    public static Predicate Parse(string format, params dynamic[] args)
+    {
+        return new PredicateParser(format, args).ParsePredicate();
     }
 
-    public static Predicate Constant(bool value) {
-      return new ConstantPredicate(value);
+    public static Predicate Constant(bool value)
+    {
+        return new ConstantPredicate(value);
     }
 
-    public Expression<Func<T, bool>> LinqExpression<T>(LinqDialect dialect = 0) {
-      ParameterExpression self = Expression.Parameter(typeof(T), "SELF");
-      var bindings = new Dictionary<string, Expression>();
-      bindings.Add(self.Name, self);
-      if (VariableBindings != null) {
-        foreach (var pair in VariableBindings) {
-          bindings.Add("$" + pair.Key, Expression.Constant(pair.Value));
+    public Expression<Func<T, bool>> LinqExpression<T>(LinqDialect dialect = 0)
+    {
+        ParameterExpression self = Expression.Parameter(typeof(T), "SELF");
+        var bindings = new Dictionary<string, Expression>
+        {
+            { self.Name, self }
+        };
+        if (VariableBindings != null)
+        {
+            foreach (var pair in VariableBindings)
+            {
+                bindings.Add("$" + pair.Key, Expression.Constant(pair.Value));
+            }
         }
-      }
-      return Expression.Lambda<Func<T, bool>>(LinqExpression(bindings, dialect), self);
+        return Expression.Lambda<Func<T, bool>>(LinqExpression(bindings, dialect), self);
     }
 
-    public bool EvaluateObject<T>(T obj) {
-      var expr = this.LinqExpression<T>();
-      Func<T, bool> func = expr.Compile();
-      return func(obj);
+    public bool EvaluateObject<T>(T obj)
+    {
+        var expr = this.LinqExpression<T>();
+        Func<T, bool> func = expr.Compile();
+        return func(obj);
     }
 
     // Dictionary of variable names to values to replace variable references in the predicate.
@@ -51,27 +62,29 @@
     // Subclassers must implement:
     public abstract string Format { get; }
 
-    public override string ToString() {
-      return Format;
+    public override string ToString()
+    {
+        return Format;
     }
 
     // subclassers implement this (potentially recursively) to provide an expression to the public LinqExpression()
     // method, given the provided bindings.
     public abstract Expression LinqExpression(Dictionary<string, Expression> bindings, LinqDialect dialect);
-  }
-
-  public static class PredicateExtensions {
-    public static IQueryable<T> Where<T>(this IQueryable<T> e, Predicate p) {
-      var linq = p.LinqExpression<T>(LinqDialect.EntityFramework | LinqDialect.CaseInsensitiveCollation);
-      var result = e.Where(linq);
-      return result;
-    }
-
-    public static IEnumerable<T> Where<T>(this IEnumerable<T> e, Predicate p) {
-      var linq = p.LinqExpression<T>();
-      var result = e.Where(linq.Compile());
-      return result;
-    }
-  }
 }
 
+public static class PredicateExtensions
+{
+    public static IQueryable<T> Where<T>(this IQueryable<T> e, Predicate p)
+    {
+        var linq = p.LinqExpression<T>(LinqDialect.EntityFramework);
+        var result = e.Where(linq);
+        return result;
+    }
+
+    public static IEnumerable<T> Where<T>(this IEnumerable<T> e, Predicate p)
+    {
+        var linq = p.LinqExpression<T>();
+        var result = e.Where(linq.Compile());
+        return result;
+    }
+}

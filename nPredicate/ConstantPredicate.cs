@@ -1,23 +1,22 @@
-﻿namespace RealArtists.NPredicate {
-  using System.Collections.Generic;
-  using System.Linq.Expressions;
+﻿using System.Collections.Generic;
+using System.Linq.Expressions;
 
-  public class ConstantPredicate : Predicate {
-    public bool Value { get; set; }
+namespace RealArtists.NPredicate;
 
-    public ConstantPredicate(bool val) {
-      Value = val;
+public class ConstantPredicate(bool val) : Predicate
+{
+    public bool Value { get; set; } = val;
+
+    public override string Format
+    {
+        get
+        {
+            return Value ? "TRUE" : "FALSE";
+        }
     }
 
-    public override string Format {
-      get {
-        return Value ? "TRUE" : "FALSE";
-      }
+    public override Expression LinqExpression(Dictionary<string, Expression> bindings, LinqDialect dialect)
+    {
+        return Expression.Constant(Value);
     }
-
-    public override Expression LinqExpression(Dictionary<string, Expression> bindings, LinqDialect dialect) {
-      return Expression.Constant(Value);
-    }
-  }
 }
-

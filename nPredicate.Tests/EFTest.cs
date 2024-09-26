@@ -1,24 +1,28 @@
-﻿// No SQL Ce Server to connect to for these tests on the Mac side.
-#if !__MonoCS__
+﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.RegularExpressions;
+using TestSupport.EfHelpers;
+using Xunit;
 
-namespace RealArtists.NPredicate.Tests {
-  using System;
-  using System.Collections.Generic;
-  using System.Data.Entity;
-  using System.Data.Entity.Migrations;
-  using System.Linq;
-  using Xunit;
+namespace RealArtists.NPredicate.Tests;
 
-  public class TestEFUser {
+
+public class TestEFUser
+{
     public int Id { get; set; }
     public string Name { get; set; }
-  }
+}
 
-  public class TestEFDocument {
-    public TestEFDocument() {
-      Watchers = new HashSet<TestEFUser>();
-      CreationDate = DateTime.UtcNow;
-      ModificationDate = DateTime.UtcNow;
+public class TestEFDocument
+{
+    public TestEFDocument()
+    {
+        Watchers = [];
+        CreationDate = DateTime.UtcNow;
+        ModificationDate = DateTime.UtcNow;
     }
 
     public int Id { get; set; }
@@ -29,33 +33,34 @@ namespace RealArtists.NPredicate.Tests {
     public DateTime CreationDate { get; set; }
 
     public DateTime? MaybeDate { get; set; }
-  }
+}
 
-  public class TestEFContext : DbContext {
+public class TestEFContext(DbContextOptions<TestEFContext> options) : DbContext(options)
+{
     public virtual DbSet<TestEFDocument> Documents { get; set; }
     public virtual DbSet<TestEFUser> Users { get; set; }
+}
 
-    public TestEFContext() : base("name=TestEFContext") { }
+public class SqliteFixture : IDisposable
+{
+    DbContextOptionsDisposable<TestEFContext> _options;
 
-    public TestEFContext(string conn) : base(conn) { }
-  }
+    public SqliteFixture()
+    {
+        _options = SqliteInMemory.CreateOptions<TestEFContext>();
+        _options.TurnOffDispose();
 
-  public partial class TestEFMigration : DbMigrationsConfiguration<TestEFContext> {
-    public TestEFMigration() : base() {
-      this.AutomaticMigrationsEnabled = true;
-      this.AutomaticMigrationDataLossAllowed = true;
-    }
-  }
+        using var ctx = new TestEFContext(_options);
 
-  public class SqlCeFixture : IDisposable {
-    public SqlCeFixture() {
-      Database.SetInitializer(new DropCreateDatabaseAlways<TestEFContext>());
+        ctx.Database.EnsureCreated();
 
-      using (var ctx = new TestEFContext()) {
-        var james = ctx.Users.Add(new TestEFUser() { Name = "James Howard" });
-        var nick = ctx.Users.Add(new TestEFUser() { Name = "Nick Sivo" });
+        var james = new TestEFUser() { Name = "James Howard" };
+        ctx.Users.Add(james);
+        var nick = new TestEFUser() { Name = "Nick Sivo" };
+        ctx.Users.Add(nick);
 
-        var doc1 = ctx.Documents.Add(new TestEFDocument() { Content = "Hello World" });
+        var doc1 = new TestEFDocument() { Content = "Hello World" };
+        ctx.Documents.Add(doc1);
         doc1.Watchers.Add(james);
         doc1.Watchers.Add(nick);
         doc1.CreationDate = DateTime.UtcNow.AddDays(-3);
@@ -65,28 +70,41 @@ namespace RealArtists.NPredicate.Tests {
         ctx.Documents.Add(new TestEFDocument() { Content = "Goodbye Cruel World" });
 
         ctx.SaveChanges();
-      }
     }
 
-    public void Dispose() {
-      using (var ctx = new TestEFContext()) {
-        ctx.Database.Delete();
-      }
+    public TestEFContext CreateContext()
+    {
+        return new TestEFContext(_options);
     }
-  }
 
-  public class EFTest : IClassFixture<SqlCeFixture> {
+    public void Dispose()
+    {
+        if (_options != null)
+        {
+            _options.Dispose();
+            _options = null;
+        }
+    }
+}
+
+public class EFTest(SqliteFixture fixture) : IClassFixture<SqliteFixture>
+{
+    private readonly SqliteFixture _fixture = fixture;
+
     [Fact]
-    public void TestEFSanity() {
-      using (var ctx = new TestEFContext()) {
+    public void TestEFSanity()
+    {
+        using var ctx = _fixture.CreateContext();
+        
         Assert.True(ctx.Documents.Where(x => x.Content == "Hello World").Any());
         Assert.False(ctx.Documents.Where(x => x.Content == "Nobody here but us chickens").Any());
-      }
     }
 
     [Fact]
-    public void TestStringEquals() {
-      using (var ctx = new TestEFContext("TestEFContext")) {
+    public void TestStringEquals()
+    {
+        using var ctx = _fixture.CreateContext();
+
         var needle = Expr.MakeConstant("Hello World");
         var content = Expr.MakeKeyPath("Content");
 
@@ -94,35 +112,36 @@ namespace RealArtists.NPredicate.Tests {
         var matches = ctx.Documents.Where(pred);
 
         Assert.Equal(1, matches.Count());
-      }
     }
 
     [Fact]
-    public void TestCaseInsensitive() {
-      // Content ==[c] "hello world"
+    public void TestCaseInsensitive()
+    {
+        // Content ==[c] "hello world"
 
-      using (var ctx = new TestEFContext()) {
+        using var ctx = _fixture.CreateContext();
+        
         var needle = Expr.MakeConstant("hello world");
         var content = Expr.MakeKeyPath("Content");
 
         var pred = ComparisonPredicate.EqualTo(content, needle, ComparisonPredicateModifier.Direct, ComparisonPredicateOptions.CaseInsensitive);
         var matches = ctx.Documents.Where(pred);
-        Assert.Equal(1, matches.Count());
+        Assert.Single(matches);
 
         var pred2 = ComparisonPredicate.EqualTo(content, needle, ComparisonPredicateModifier.Direct);
         var matches2 = ctx.Documents.Where(pred2);
-        Assert.Equal(1, matches2.Count());
-
-      }
+        Assert.Empty(matches2);
 
     }
 
     [Fact]
-    public void TestSubquery() {
-      // COUNT(SUBQUERY(Watchers, $user, $user.Name BEGINSWITH "James")) > 0
-      // (x => x.Watchers.Where(user => user.Name.StartsWith("James")).Count() > 0);
+    public void TestSubquery()
+    {
+        // COUNT(SUBQUERY(Watchers, $user, $user.Name BEGINSWITH "James")) > 0
+        // (x => x.Watchers.Where(user => user.Name.StartsWith("James")).Count() > 0);
 
-      using (var ctx = new TestEFContext()) {
+        using var ctx = _fixture.CreateContext();
+
         var collection = Expr.MakeKeyPath("Watchers");
         var needle = Expr.MakeConstant("James");
         var user = Expr.MakeVariable("$user");
@@ -136,15 +155,16 @@ namespace RealArtists.NPredicate.Tests {
         var matches = ctx.Documents.Where(pred);
 
         Assert.Equal(1, matches.Count());
-      }
     }
 
     [Fact]
-    public void TestSubquery2() {
-      // SUBQUERY(Watchers, $user, $user.Name BEGINSWITH "James").@count > 0
-      // (x => x.Watchers.Where(user => user.Name.StartsWith("James")).Count() > 0);
+    public void TestSubquery2()
+    {
+        // SUBQUERY(Watchers, $user, $user.Name BEGINSWITH "James").@count > 0
+        // (x => x.Watchers.Where(user => user.Name.StartsWith("James")).Count() > 0);
 
-      using (var ctx = new TestEFContext()) {
+        using var ctx = _fixture.CreateContext();
+
         var collection = Expr.MakeKeyPath("Watchers");
         var needle = Expr.MakeConstant("James");
         var user = Expr.MakeVariable("$user");
@@ -158,83 +178,78 @@ namespace RealArtists.NPredicate.Tests {
         var matches = ctx.Documents.Where(pred);
 
         Assert.Equal(1, matches.Count());
-      }
     }
 
     [Fact]
-    public void TestSubquery3() {
-      using (var ctx = new TestEFContext()) {
+    public void TestSubquery3()
+    {
+        using var ctx = _fixture.CreateContext();
+
         var pred = Predicate.Parse("SUBQUERY(Watchers, $user, $user.Name BEGINSWITH 'James').@count > 0");
         var matches = ctx.Documents.Where(pred);
 
         Assert.Equal(1, matches.Count());
-      }
     }
 
-    // TODO: This can work, it's just a matter of placing _Predicate_MatchesRegex into
-    // the database and then properly mapping and registering Utils._Predicate_MatchesRegex
-    // with Entity Framework.
-    // See ship://Problems/371 <Register _Predicate_MatchesRegex in the database and map it into EF>
-#if false
-        [Fact]
-        public void TestMatches()
-        {
-            //var d1 = Context.Documents.Where(x => Utils._Predicate_MatchesRegex(x.Content, ".*World$"));
-            using (var ctx = new TestEFContext()) {
-                var predicate = Predicate.Parse("Content MATCHES '.*World$'");
-                var d2 = ctx.Documents.Where(predicate);
-                Assert.Equal(1, d2.Count());
-            }
-            // Assert.Throws<Exception>(delegate { Context.Documents.Where(predicate); });
-        }
-#endif
+    [Fact]
+    public void TestMatches()
+    {
+        using var ctx = _fixture.CreateContext();
+
+        var predicate = Predicate.Parse("Content MATCHES '.*World$'");
+        var d2 = ctx.Documents.Where(predicate);
+        Assert.Equal(2, d2.Count());
+        Assert.All(d2, (d) => Assert.Matches(".*World$", d.Content));
+    }
 
     [Fact]
-    public void TestName() {
-      using (var ctx = new TestEFContext()) {
+    public void TestName()
+    {
+        using var ctx = _fixture.CreateContext();
+
         var predicate = Predicate.Parse("Author.Name == 'James Howard'");
         Assert.False(ctx.Documents.Where(predicate).Any());
-      }
     }
 
     [Fact]
-    public void TestDateComparison() {
-      using (var ctx = new TestEFContext()) {
+    public void TestDateComparison()
+    {
+        using var ctx = _fixture.CreateContext();
+
         var nope = Predicate.Parse("CreationDate > ModificationDate");
         var yep = Predicate.Parse("CreationDate < ModificationDate");
 
         Assert.False(ctx.Documents.Where(nope).Any());
         Assert.True(ctx.Documents.Where(yep).Any());
-      }
     }
 
     [Fact]
-    public void TestDateArithmetic() {
-      using (var ctx = new TestEFContext()) {
+    public void TestDateArithmetic()
+    {
+        using var ctx = _fixture.CreateContext();
+
         var nope = Predicate.Parse("CreationDate < FUNCTION(now(), 'dateByAddingDays:', -4)");
         var yep = Predicate.Parse("CreationDate < FUNCTION(now(), 'dateByAddingDays:', -2)");
 
         Assert.False(ctx.Documents.Where(nope).Any());
         Assert.True(ctx.Documents.Where(yep).Any());
-      }
     }
 
     [Fact]
-    public void TestNullableDateComparison() {
-      using (var ctx = new TestEFContext()) {
+    public void TestNullableDateComparison()
+    {
+        using var ctx = _fixture.CreateContext();
+
         var yep = Predicate.Parse("MaybeDate < NOW()");
         Assert.True(ctx.Documents.Where(yep).Any());
-      }
     }
 
     [Fact]
-    public void TestNullableDateAsNull() {
-      using (var ctx = new TestEFContext()) {
+    public void TestNullableDateAsNull()
+    {
+        using var ctx = _fixture.CreateContext();
+
         var yep = Predicate.Parse("MaybeDate == nil");
         Assert.True(ctx.Documents.Where(yep).Any());
-      }
     }
-  }
 }
-
-#endif
